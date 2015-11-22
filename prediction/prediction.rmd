@@ -1,0 +1,205 @@
+---
+title: "Practical Machine Learning"
+author: "Juan Carlos Martinez"
+date: "November 19, 2015"
+output: html_document
+---
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(caret)
+library(gridExtra)
+set.seed(121212)
+```
+#Introduction
+Use data collected form different body sensors to predict the quality of given excercise. This data is collected from 
+[http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har)
+Where more information can be found.
+
+
+
+# Preprocessing
+###Loading the data
+```{r, cache=TRUE}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+
+```
+
+### Explaining the data set
+The authors collected information from 4 sensors: *arm*, *dumbbell*, *belt* and *forearm*. Data was collected as a time series, where every 1 sec, a row containing statistical summaries from the current 1-sec window is set. This row is identified by the value *yes* on the column *new_window*. It is important to realize that for all other rows, the ones marked as *new_window=no*, there are missing values for all of the statistical summaries columns. The 20-samples on the *testing* set do not contain any of this special rows. 
+
+It is justified then to safely ignore the statitical *new_window=yes* rows, and of course, as a consecuence, to ignore the statistical columns. 
+
+This simplification leads to the following variables collected for each sensor:
+* roll
+* pitch
+* yaw
+* gyros x,y,z
+* accel x,y,z
+* total_accel
+* magnet x,y,z
+
+
+```{r, cache=TRUE}
+training <- filter(training, new_window=="no")
+
+data <- training[,grep("^roll_|^pitch_|^yaw|^total_accel|^gyros_|^accel_|^magnet_|user_name|classe|X", names(training), value=TRUE)]
+names(data)
+```
+
+### Outliers
+Each of the variables was plotted in the following way
+```{r, cache=TRUE, warning=FALSE}
+qplot(x=X, y=magnet_dumbbell_y , data=data, color=classe, fill=classe, geom=c("boxplot") )
+```
+
+This lead to the discovery of 3 big outliers that are so big we can safely remove them. ***Plots for all variables are not shown on this document.***
+
+```{r, echo=FALSE}
+#(data[(order(data$magnet_dumbbell_y)),])[1,]
+#data = data[-9088,]
+#qplot(x=X, y=magnet_dumbbell_y , data=data, color=classe, fill=classe, geom=c("boxplot") )
+
+#(data[rev(order(data$gyros_dumbbell_z)),])[1,]
+#data = data[-5270,]
+#qplot(x=X, y=gyros_dumbbell_z , data=data, color=classe, fill=classe, geom=c("boxplot") )
+
+
+#(data[rev(order(data$gyros_dumbbell_y)),])[1,]
+#data = data[-149,]
+#qplot(x=X, y=gyros_dumbbell_y , data=data, color=classe, fill=classe, geom=c("boxplot") )
+
+```
+
+```{r, cache=TRUE}
+data = data[-9088,]
+data = data[-5270,]
+data = data[-149,]
+```
+
+### Exploring data
+Plotting a couple of sensors, coloring by class:
+
+#### magnet_dumbbell_y
+```{r, warning=FALSE}
+p1 <- qplot(x=X, y=magnet_dumbbell_y , data=data, color=classe, fill=classe, geom=c("boxplot") )
+p2 <- qplot(x=X, y=magnet_dumbbell_y , data=data, color=classe, fill=classe)
+grid.arrange(p1,p2,nrow=2)
+```
+
+#### magnet_dumbbell_y
+```{r, warning=FALSE}
+p1 <- qplot(x=X, y=pitch_belt , data=data, color=classe, fill=classe, geom=c("boxplot") )
+p2 <- qplot(x=X, y=pitch_belt , data=data, color=classe, fill=classe)
+grid.arrange(p1,p2,nrow=2)
+```
+
+
+These plots show a lot of variabilty within the same *classe*, and almost no variability among them. 
+**This seems like a though task for a predictioner**. 
+Let us see how this unfolds.
+
+
+### Constructing the features set
+After  plotting all variables on the same manner (not shown on this doc), we don't see any single variable that stands out with a strong relation with *classe*, so, except for the extra computational cost, we are going to predict *classe* using all sensor variables:
+```{r}
+z <- paste(grep("^roll_|^pitch_|^yaw|^total_accel|^gyros_|^accel_|^magnet_", names(data), value=TRUE ), collapse="+")
+formula <- paste("classe ~ ", z, collapse="")
+formula
+```
+
+
+# Training models
+Given the size of the training sample (aprox 19000) and number of variables (54), trying several models is a long process for a normal computer. So, we are going to do inital testings using a random subsampling of the training set to speed up things. If we see a model giving best results, we will increase the subsampling size and finally run it on the whole training set. 
+
+### Training Options
+We are going to use *5-folds*  *CrossValidation*, with *3 repats* and training size of *60%* . These parameters were choosen to reduce computation time.
+
+#### A 5000 subsample try
+```{r, cache=TRUE}
+sdata = data[sample(nrow(data), 5000),]
+```
+
+Given the "decision-nature" of the question, tree-like algorithms are a good fit.
+
+#### Random forest
+```{r, cache=TRUE, message=FALSE, warning=FALSE}
+
+mod <- train(as.formula(formula), data=sdata, trControl=trainControl(method="cv", number=5, repeats=3, verboseIter=FALSE, p=0.6, allowParallel=TRUE), verbose=FALSE, method="rf")
+predictions <- predict(mod, newdata=data)
+confusionMatrix(predictions, data$classe)
+```
+
+We get pretty good results with this subset. 
+
+When increasing the sample size, results get better (**not shown in this doc**). We see high accuracy, with a good confidence interval.
+
+### TreeBag
+Let us see another tree-like algorithm, to see if results can improve even more.
+```{r,cache=TRUE, message=FALSE, warning=FALSE}
+mod <- train(as.formula(formula), data=sdata, trControl=trainControl(method="cv", number=5, repeats=3, verboseIter=FALSE, p=0.6, allowParallel=TRUE), verbose=FALSE, method="treebag")
+predictions <- predict(mod, newdata=data)
+confusionMatrix(predictions, data$classe)
+```
+
+Result are a bit less good, but good enough. The added plus is that the **computation time is less than with RForest**.
+
+
+# Final Model
+For accuracy, let us chose Random Forest.
+
+Running on the whole training set
+```{r, cache=TRUE, message=FALSE, warning=FALSE}
+mod <- train(as.formula(formula), data=data, trControl=trainControl(method="cv", number=5, repeats=3, verboseIter=FALSE, p=0.6, allowParallel=TRUE), verbose=FALSE, method="rf")
+mod$finalModel
+```
+The overral error rate and per class are really good. 
+
+# Estimating Out Of Sample Error
+Let us do 10 random prediction tests with our model
+```{r}
+for (i in 1:10)
+{
+  
+  tdata <- data[sample(nrow(data), 2000),]
+  predictions <- predict(mod, newdata=tdata)
+  cm <- confusionMatrix(predictions, tdata$classe)
+  #print(cm)
+  if (i==1)
+    accum = cm$overall
+  else
+    accum = accum + cm$overall
+}
+```
+
+Averaging these, we get that our Out-of-sample estimates are:
+
+```{r}
+total <- accum /10
+print(total)
+```
+Which shows good accuracy with good confidence interval.
+
+
+
+
+# 20-sample Test
+Finally, let's predict the given test set:
+```{r}
+predictions <- predict(mod, newdata=testing)
+#results <- cbind(testing, predictions) 
+print(predictions)
+
+```
+The grading machine will decide!
+
+
+
+
+
+
+
+
+
+
